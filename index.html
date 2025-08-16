@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f172a" />
+  <!-- iOS: フルスクリーン化 -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <title>Ring Shogi</title>
+  <style>
+    html,body{margin:0;height:100%;background:#0b1020;color:#e5e7eb;font-family:system-ui,-apple-system,\"Segoe UI\",Roboto,\"Hiragino Kaku Gothic ProN\",\"Meiryo\",sans-serif}
+    #app{display:flex;flex-direction:column;height:100%;}
+    header{padding:10px 14px;font-weight:600;letter-spacing:.02em;background:#0f172a;position:sticky;top:0;z-index:10}
+    .bar{display:flex;gap:8px;align-items:center}
+    .btn{padding:10px 12px;border-radius:14px;background:#1e293b;color:#e5e7eb;border:none}
+    canvas{touch-action:none; display:block; margin:0 auto; image-rendering:pixelated}
+    footer{padding:8px 12px;color:#94a3b8;font-size:12px;text-align:center}
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="bar">
+        <button id="new" class="btn">新規対局</button>
+        <button id="undo" class="btn">戻す</button>
+        <button id="redo" class="btn">やり直し</button>
+        <button id="aiMove" class="btn">AIに指させる</button>
+        <button id="refresh" class="btn">更新</button>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('controllerchange', () => location.reload());
+  document.getElementById('refresh')?.addEventListener('click', async () => {
+    const reg = await navigator.serviceWorker.getRegistration();
+    await reg?.update(); // 新しいswを取りにいく
+    // “待機中”のSWがいたら即時適用
+    if (reg?.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+  });
+}
+</script>
+      </div>
+    </header>
+    <canvas id="board" width="560" height="560"></canvas>
+    <footer>オフライン対応 / ホーム画面に追加でアプリ風に</footer>
+  </div>
+  <script>
+  // ===== PWA 登録 =====
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js'));
+  }
+
+  // ===== Ring Shogi（7x7 / 中央5x5 + 外周リング）簡易実装 =====
+  const N=7, CELL=Math.floor(Math.min(innerWidth, innerHeight-120)/7);
+  const cv=document.getElementById('board');
+  cv.width=cv.height=CELL*N; const cx=cv.getContext('2d');
+  const CENTER=(x,y)=> (x>0&&x<6&&y>0&&y<6);
+
+  const SENTE=1, GOTE=2;
+  const PT={K:'K',R:'R',B:'B',G:'G',S:'S',N:'N',L:'L',P:'P'};
+  let board, sideToMove, history=[], fwd=[];
+
+  function emptyBoard(){
+    return Array.from({length:N},(_,y)=>Array.from({length:N},(_,x)=>({
+      kind: (x>0&&x<6&&y>0&&y<6)?'CENTER':'RING', occ:null
+    })));
+  }
+
+  function setup(){
+    board=emptyBoard(); sideToMove=SENTE; history=[]; fwd=[];
+    // v0.1: まずはデモ配置（王と飛角と歩だけ）
+    put(3,3,{side:SENTE,type:PT.K});
+    put(3,0,{side:SENTE,type:PT.R});
+    put(0,3,{side:GOTE,type:PT.B});
+    for(let x=1;x<6;x++) put(x,5,{side:SENTE,type:PT.P});
+    for(let x=1;x<6;x++) put(x,1,{side:GOTE,type:PT.P});
+    draw();
+  }
+  function put(x,y,p){ board[y][x].occ=p; }
+
+  function draw(){ cx.clearRect(0,0,cv.width,cv.height);
+    for(let y=0;y<N;y++) for(let x=0;x<N;x++){
+      cx.fillStyle = board[y][x].kind==='RING' ? '#102844' : '#1b2238';
+      cx.fillRect(x*CELL,y*CELL,CELL-1,CELL-1);
+      const p=board[y][x].occ; if(p){
+        cx.fillStyle = p.side===SENTE?'#e5e7eb':'#facc15';
+        cx.font = Math.floor(CELL*0.5)+"px system-ui"; cx.textAlign='center'; cx.textBaseline='middle';
+        cx.fillText(p.type, x*CELL+CELL/2, y*CELL+CELL/2);
+      }
+    }
+    if(sel){
+      cx.strokeStyle='#fff'; cx.lineWidth=2; cx.strokeRect(sel.x*CELL+4, sel.y*CELL+4, CELL-8, CELL-8);
+      const mv=genMoves(sel.x,sel.y);
+      mv.forEach(m=>{ cx.strokeStyle='#94a3b8'; cx.strokeRect(m.x*CELL+8, m.y*CELL+8, CELL-16, CELL-16); });
+    }
+  }
+
+  function onRing(x,y){ return x===0||x===6||y===0||y===6; }
+  function wrap(x,y,dx,dy){
+    let nx=x+dx, ny=y+dy;
+    if(nx<0||nx>=N||ny<0||ny>=N){
+      if(dy===0 && (y===0||y===N-1)) return {x:(nx+N)%N, y};
+      if(dx===0 && (x===0||x===N-1)) return {x, y:(ny+N)%N};
+      // 対角ワープ（v0.1仮）
+      if(Math.abs(dx)===1 && Math.abs(dy)===1){
+        return {x:(nx+N)%N, y:(ny+N)%N};
+      }
+    }
+    return {x:nx,y:ny};
+  }
+
+  function genSlides(x,y,dirs){
+    const me=board[y][x].occ; const out=[];
+    for(const [dx,dy] of dirs){ let cx0=x, cy0=y;
+      while(true){
+        let nx=cx0+dx, ny=cy0+dy;
+        if(onRing(cx0,cy0) && (nx<0||nx>=N||ny<0||ny>=N)) ({x:nx,y:ny}=wrap(cx0,cy0,dx,dy));
+        if(nx<0||nx>=N||ny<0||ny>=N) break; // 中域の境界
+        const sq=board[ny][nx];
+        if(!sq.occ){ out.push({x:nx,y:ny}); cx0=nx; cy0=ny; continue; }
+        if(sq.occ.side!==me.side) out.push({x:nx,y:ny});
+        break;
+      }
+    }
+    return out;
+  }
+
+  function genMoves(x,y){
+    const p=board[y][x].occ; if(!p) return [];
+    if(p.type===PT.R) return genSlides(x,y,[[1,0],[-1,0],[0,1],[0,-1]]);
+    if(p.type===PT.B) return genSlides(x,y,[[1,1],[1,-1],[-1,1],[-1,-1]]);
+    if(p.type===PT.K){ // 最小
+      const out=[]; for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]){
+        let nx=x+dx, ny=y+dy; // ステップ駒はワープしない
+        if(nx<0||nx>=N||ny<0||ny>=N) continue; const sq=board[ny][nx];
+        if(!sq.occ || sq.occ.side!==p.side) out.push({x:nx,y:ny});
+      } return out;
+    }
+    if(p.type===PT.P){ // 先手は-1、後手は+1 へ1歩
+      const dir = (p.side===SENTE?-1:1); const nx=x, ny=y+dir;
+      if(ny>=0&&ny<N){ const sq=board[ny][nx]; if(!sq.occ) return [{x:nx,y:ny}]; }
+      return [];
+    }
+    return [];
+  }
+
+  function move(from,to){ const piece=board[from.y][from.x].occ; const cap=board[to.y][to.x].occ||null;
+    history.push({from,to,piece,cap}); fwd.length=0;
+    board[to.y][to.x].occ=piece; board[from.y][from.x].occ=null; sideToMove = (sideToMove===SENTE?GOTE:SENTE);
+  }
+  function undo(){ const h=history.pop(); if(!h) return; fwd.push(h);
+    board[h.from.y][h.from.x].occ=h.piece; board[h.to.y][h.to.x].occ=h.cap; sideToMove = (sideToMove===SENTE?GOTE:SENTE);
+  }
+  function redo(){ const h=fwd.pop(); if(!h) return; history.push(h);
+    board[h.to.y][h.to.x].occ=h.piece; board[h.from.y][h.from.x].occ=null; sideToMove = (sideToMove===SENTE?GOTE:SENTE);
+  }
+
+  // ===== すごく簡単なAI（1手先+捕獲ボーナス） =====
+  function aiStep(){
+    let best=null, bestScore=-1e9; // 極簡易
+    for(let y=0;y<N;y++)for(let x=0;x<N;x++){
+      const p=board[y][x].occ; if(!p||p.side!==sideToMove) continue;
+      for(const m of genMoves(x,y)){
+        const cap=board[m.y][m.x].occ; const score = (cap?value(cap):0) + ((x>0&&x<6&&y>0&&y<6)?0.2:0.1);
+        if(score>bestScore){ bestScore=score; best={from:{x,y},to:m}; }
+      }
+    }
+    if(best) move(best.from,best.to); draw();
+  }
+  function value(p){ return ({K:1000,R:5,B:5,G:3,S:3,N:2,L:2,P:1})[p.type]||1; }
+
+  // ===== 入力（タップ） =====
+  let sel=null; cv.addEventListener('pointerdown',ev=>{
+    const rect=cv.getBoundingClientRect(); const x=Math.floor((ev.clientX-rect.left)/CELL); const y=Math.floor((ev.clientY-rect.top)/CELL);
+    if(!sel){ if(board[y][x].occ && board[y][x].occ.side===sideToMove){ sel={x,y}; draw(); }
+    }else{
+      const moves=genMoves(sel.x,sel.y); if(moves.some(m=>m.x===x&&m.y===y)){ move(sel,{x,y}); sel=null; draw(); }
+      else { sel=null; draw(); }
+    }
+  });
+
+  // ===== ボタン =====
+  document.getElementById('new').onclick=setup;
+  document.getElementById('undo').onclick=()=>{undo();draw();};
+  document.getElementById('redo').onclick=()=>{redo();draw();};
+  document.getElementById('aiMove').onclick=()=>aiStep();
+
+  setup();
+  </script>
+</body>
+</html>
