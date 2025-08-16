@@ -13,3 +13,44 @@
 <div class="stage"><canvas id="board"></canvas></div>
 <footer>オフライン対応 / ホーム画面に追加でアプリ風に</footer><canvas id="board"></canvas></div>
 </style>
+<script>
+  // ===== 正しいビューポート高（アドレスバー除去） =====
+  function getViewportSize(){
+    const vw = (window.visualViewport?.width ?? window.innerWidth);
+    const vh = (window.visualViewport?.height ?? window.innerHeight);
+    return { vw, vh };
+  }
+
+  function resizeBoard(){
+    const { vw, vh } = getViewportSize();
+
+    // ヘッダーとフッターの実寸を引く
+    const header = document.querySelector('header')?.getBoundingClientRect().height ?? 0;
+    const footer = document.querySelector('footer')?.getBoundingClientRect().height ?? 0;
+
+    // 正方形キャンバスの辺長（px）
+    const size = Math.floor(Math.min(vw, vh - header - footer));
+    const N = 7;
+    const CELL = Math.floor(size / N);
+
+    const cv = document.getElementById('board');
+    // 物理ピクセルに対応（高DPIでも滲まない）
+    const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+    cv.style.width  = (CELL*N) + 'px';
+    cv.style.height = (CELL*N) + 'px';
+    cv.width  = CELL*N * dpr;
+    cv.height = CELL*N * dpr;
+
+    const cx = cv.getContext('2d');
+    cx.setTransform(dpr,0,0,dpr,0,0); // スケール適用
+
+    // あとは既存の描画ロジックが CELL, N を使うように
+    window.__BOARD_GEOM__ = { CELL, N, cx, cv }; // もし他関数から参照するなら
+    if (window.draw) window.draw(); // 再描画呼び出し
+  }
+
+  // 初期化＆リスナー
+  addEventListener('load', resizeBoard);
+  addEventListener('orientationchange', () => setTimeout(resizeBoard, 200));
+  window.visualViewport?.addEventListener('resize', resizeBoard);
+</script>
