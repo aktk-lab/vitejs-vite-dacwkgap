@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ringshogi-v1';
+const CACHE_NAME = 'ringshogi-v4'; // ここを上げる
 const ASSETS = [
   '/', '/index.html', '/manifest.webmanifest',
   '/sw.js', '/icons/icon-192.png', '/icons/icon-512.png'
